@@ -14,9 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
 	"github.com/lowplane/kerno/internal/bpf"
+	"github.com/lowplane/kerno/internal/metrics"
+	"github.com/lowplane/kerno/internal/version"
 )
 
 func newStartCmd() *cobra.Command {
@@ -115,22 +118,22 @@ func runStart(ctx context.Context, opts startOpts) error {
 
 	logger.Info("eBPF programs loaded", "loaded", loadedCount, "total", len(loaders))
 
-	// Phase 2: Start event drain goroutines to prevent kernel ring buffer drops.
-	for _, l := range loaderSet.Loaders() {
-		ch, err := l.Events(ctx)
-		if err != nil {
-			logger.Debug("skipping event drain for unloaded program", "program", l.Name())
-			continue
-		}
-		go drainEvents(ctx, l.Name(), ch, logger)
-	}
+	// Set Prometheus gauges for self-monitoring.
+	metrics.BPFProgramsLoaded.Set(float64(loadedCount))
+	metrics.InfoMetric.WithLabelValues(version.Version).Set(1)
+
+	// Phase 2: Start the metrics bridge — reads BPF events and feeds Prometheus.
+	bridge := metrics.NewBridge(logger)
+	bridge.Start(ctx, loaderSet.Loaders())
+	defer bridge.Stop()
 
 	// Phase 3: Start HTTP server for health and metrics.
 	var httpServer *http.Server
 	if opts.prometheus {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", healthzHandler(loadedCount, len(loaders)))
-		mux.HandleFunc("/metrics", metricsHandler())
+		mux.HandleFunc("/readyz", healthzHandler(loadedCount, len(loaders)))
+		mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 
 		httpServer = &http.Server{
 			Addr:    promAddr,
@@ -151,6 +154,7 @@ func runStart(ctx context.Context, opts startOpts) error {
 	if opts.prometheus {
 		fmt.Printf("  Prometheus:    http://%s/metrics\n", promAddr)
 		fmt.Printf("  Health:        http://%s/healthz\n", promAddr)
+		fmt.Printf("  Readiness:     http://%s/readyz\n", promAddr)
 	}
 	if opts.dashboard {
 		fmt.Printf("  Dashboard:     http://%s (not yet implemented)\n", cfg.Dashboard.Addr)
@@ -203,22 +207,6 @@ func buildLoaders(logger *slog.Logger) ([]bpf.Loader, *bpf.LoaderSet) {
 	return loaders, set
 }
 
-// drainEvents reads and discards events to prevent kernel ring buffer overflow.
-func drainEvents(ctx context.Context, name string, ch <-chan bpf.RawEvent, logger *slog.Logger) {
-	count := uint64(0)
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Debug("event drain stopped", "program", name, "events", count)
-			return
-		case _, ok := <-ch:
-			if !ok {
-				return
-			}
-			count++
-		}
-	}
-}
 
 // healthzHandler returns the health check handler.
 func healthzHandler(loaded, total int) http.HandlerFunc {
@@ -233,13 +221,3 @@ func healthzHandler(loaded, total int) http.HandlerFunc {
 	}
 }
 
-// metricsHandler returns a placeholder metrics handler.
-// Full Prometheus metrics will be implemented in Phase 5.
-func metricsHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		fmt.Fprintln(w, "# Kerno metrics placeholder — full implementation in Phase 5")
-		fmt.Fprintln(w, "# See: https://github.com/lowplane/kerno")
-		fmt.Fprintf(w, "kerno_info{version=\"dev\"} 1\n")
-	}
-}
