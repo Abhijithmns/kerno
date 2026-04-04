@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/lowplane/kerno/internal/adapter"
 	"github.com/lowplane/kerno/internal/bpf"
 	"github.com/lowplane/kerno/internal/metrics"
 	"github.com/lowplane/kerno/internal/version"
@@ -126,6 +127,15 @@ func runStart(ctx context.Context, opts startOpts) error {
 	bridge := metrics.NewBridge(logger)
 	bridge.Start(ctx, loaderSet.Loaders())
 	defer bridge.Stop()
+
+	// Phase 2b: Start environment adapter for event enrichment.
+	env := adapter.DetectEnvironment()
+	adpt := adapter.NewAdapter(logger, env)
+	if err := adpt.Start(ctx); err != nil {
+		logger.Warn("failed to start environment adapter", "error", err)
+	}
+	defer adpt.Stop()
+	logger.Info("environment adapter started", "adapter", adpt.Name(), "env", env)
 
 	// Phase 3: Start HTTP server for health and metrics.
 	var httpServer *http.Server
