@@ -174,17 +174,18 @@ verify: build bpf-verify
 
 ## demo: Record demo.gif via vhs (https://github.com/charmbracelet/vhs)
 demo: build bpf-verify
-	@if ! command -v vhs >/dev/null; then \
+	@VHS_PATH=$$(command -v vhs); \
+	if [ -z "$$VHS_PATH" ]; then \
 		echo "vhs not installed. Install with:"; \
 		echo "  sudo apt-get install -y ttyd ffmpeg"; \
 		echo "  go install github.com/charmbracelet/vhs@latest"; \
 		echo "  export PATH=\"\$$HOME/go/bin:\$$PATH\""; \
 		exit 1; \
-	fi
-	@echo "==> Caching sudo credentials so the recorded shell doesn't hang on the password prompt"
-	@sudo -v
-	@echo "==> Recording demo.gif (this takes ~45s; do not type)"
-	vhs demo.tape
+	fi; \
+	echo "==> Recording demo.gif (vhs runs as root so no in-shell sudo prompt)"; \
+	echo "==> Will prompt for sudo password ONCE, then record for ~50s"; \
+	sudo "$$VHS_PATH" demo.tape; \
+	sudo chown $$(id -u):$$(id -g) demo.gif 2>/dev/null || true
 	@echo "Wrote demo.gif ($$(du -h demo.gif | cut -f1))"
 	@if command -v gifsicle >/dev/null; then \
 		gifsicle --optimize=3 demo.gif -o demo.gif && \

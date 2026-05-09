@@ -2,10 +2,10 @@
 
 # KERNO
 
-### The Production Incident Diagnosis Engine for Kubernetes
+### `kerno doctor` — the one-command kernel diagnostic
 
 **Your cluster broke. Your dashboards are green. Users are paging.**
-**One command. Root cause. 30 seconds.**
+**Run `kerno doctor`. 30 seconds. Root cause. Plain English.**
 
 [![CI](https://github.com/optiqor/kerno/actions/workflows/ci.yml/badge.svg)](https://github.com/optiqor/kerno/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/optiqor/kerno)](https://goreportcard.com/report/github.com/optiqor/kerno)
@@ -19,6 +19,21 @@
 ![demo](demo.gif)
 
 </div>
+
+---
+
+## The MVP: `kerno doctor`
+
+Every other observability tool watches your application. **Kerno asks the kernel.**
+When something breaks in production, the kernel knew minutes before your dashboards. Hours before your users.
+
+```bash
+sudo kerno doctor
+```
+
+That single command runs for 30 seconds, collects eBPF signals across **6 dimensions** simultaneously (syscalls, TCP, OOM, disk I/O, scheduler, FDs), correlates them, and prints a ranked diagnostic report with **plain-English causes, evidence, and actionable fixes** - no setup, no config, no dashboards.
+
+**Free. Open source. CNCF-aligned. Kubernetes-native. Works on bare metal too.**
 
 ---
 
