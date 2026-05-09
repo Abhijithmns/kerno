@@ -54,3 +54,36 @@ var syscallNames = map[uint32]string{
 func IsSyscallError(ret uint32) bool {
 	return ret >= 0xFFFFF001
 }
+
+// blockingSyscalls is the set of syscall numbers (amd64) that voluntarily
+// block waiting for an event. Their latency does not represent kernel
+// or hardware slowness — it represents how long the userspace caller
+// chose to wait. The doctor's syscall_latency_high rule must exclude
+// these or it would flag every idle process as critically slow.
+//
+// Each of these can also return non-fatal "errors" (EAGAIN, ETIMEDOUT,
+// ECHILD) as part of normal operation, so they're also excluded from
+// the syscall_error_rate rule.
+var blockingSyscalls = map[uint32]bool{
+	7:   true, // poll
+	23:  true, // select
+	61:  true, // wait4
+	35:  true, // nanosleep
+	34:  true, // pause
+	232: true, // epoll_wait
+	202: true, // futex
+	247: true, // waitid
+	270: true, // pselect6
+	271: true, // ppoll
+	281: true, // epoll_pwait
+	441: true, // epoll_pwait2
+	43:  true, // accept
+	288: true, // accept4
+}
+
+// IsBlockingSyscall reports whether a syscall is one of the voluntary
+// blocking ones (epoll_wait, futex, wait4, ...). The doctor uses this
+// to suppress false positives from idle processes.
+func IsBlockingSyscall(nr uint32) bool {
+	return blockingSyscalls[nr]
+}

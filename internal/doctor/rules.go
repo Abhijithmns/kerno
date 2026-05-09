@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/optiqor/kerno/internal/bpf"
 	"github.com/optiqor/kerno/internal/collector"
 	"github.com/optiqor/kerno/internal/config"
 )
@@ -304,6 +305,12 @@ func evalSyscallLatencyHigh(s *collector.Signals, t config.DoctorThresholds) []F
 	var hot []collector.SyscallEntry
 	sev := SeverityWarning
 	for _, entry := range s.Syscall.Entries {
+		// Voluntary-blocking syscalls (futex, epoll_wait, poll, ...)
+		// have latency dominated by userspace wait time, not by the
+		// kernel — flagging them produces false positives on idle hosts.
+		if bpf.IsBlockingSyscall(entry.SyscallNr) {
+			continue
+		}
 		if entry.Latency.P99 < warningNs {
 			continue
 		}
@@ -428,6 +435,12 @@ func evalSyscallErrorRate(s *collector.Signals) []Finding {
 	var entries []hot
 	sev := SeverityWarning
 	for _, entry := range s.Syscall.Entries {
+		// Blocking syscalls return EAGAIN/ETIMEDOUT/ECHILD as part of
+		// normal operation (e.g., wait4 with no children, epoll_wait
+		// timeout). Exclude them or every idle host looks broken.
+		if bpf.IsBlockingSyscall(entry.SyscallNr) {
+			continue
+		}
 		if entry.Count == 0 || entry.ErrorCount == 0 {
 			continue
 		}
