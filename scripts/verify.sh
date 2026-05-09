@@ -451,6 +451,153 @@ phase_manifests() {
     fi
 }
 
+# ─── tc netem TCP retransmit detection ────────────────────────────────────
+#
+# Apply packet loss to loopback, run a TCP transfer, and verify
+# kerno doctor flags the resulting retransmit storm.
+
+phase_tc_netem() {
+    echo "==> 12. tc netem → tcp_retransmit_storm"
+    local n=$1
+
+    if ! require_cmd tc; then
+        phase_skip "$n" "tc not installed"
+        return 0
+    fi
+
+    # Apply 30% packet loss to lo for the duration of the test.
+    if ! sudo tc qdisc add dev lo root netem loss 30% 2>/tmp/verify-tc.log; then
+        if grep -q "Exclusivity flag" /tmp/verify-tc.log; then
+            sudo tc qdisc del dev lo root 2>/dev/null || true
+            sudo tc qdisc add dev lo root netem loss 30% 2>/tmp/verify-tc.log || {
+                phase_fail "$n" "could not install netem qdisc"
+                return 1
+            }
+        else
+            phase_fail "$n" "tc qdisc add failed"
+            return 1
+        fi
+    fi
+    trap 'sudo tc qdisc del dev lo root 2>/dev/null || true' RETURN
+
+    # Background: a netcat-style TCP echo loop that pumps data through lo.
+    # We use kerno chaos tcp-churn since it generates real connect+close.
+    "$KERNO" chaos --induce tcp-churn --duration 12s --intensity high --yes \
+        >/tmp/verify-tcnetem-chaos.log 2>&1 &
+    local cpid=$!
+    sleep 1
+
+    sudo "$KERNO" --config scripts/verify-config.yaml \
+        doctor --duration 10s --output json \
+        >/tmp/verify-tcnetem-doctor.json 2>/tmp/verify-tcnetem-doctor.log
+
+    wait $cpid 2>/dev/null || true
+    sudo tc qdisc del dev lo root 2>/dev/null || true
+
+    # Either tcp_retransmit_storm or tcp_rtt_degradation should fire.
+    if jq -e '.findings[] | select(.rule == "tcp_retransmit_storm" or .rule == "tcp_rtt_degradation")' \
+            /tmp/verify-tcnetem-doctor.json >/dev/null 2>&1; then
+        local rule
+        rule=$(jq -r '.findings[] | select(.rule == "tcp_retransmit_storm" or .rule == "tcp_rtt_degradation") | .rule' \
+            /tmp/verify-tcnetem-doctor.json | head -1)
+        phase_pass "$n" "tc netem 30% loss → $rule fired"
+    else
+        phase_fail "$n" "neither tcp_retransmit_storm nor tcp_rtt_degradation fired"
+    fi
+}
+
+# ─── stress-ng integration ────────────────────────────────────────────────
+
+phase_stress_ng() {
+    echo "==> 13. stress-ng integration"
+    local n=$1
+
+    if ! require_cmd stress-ng; then
+        phase_skip "$n" "stress-ng not installed (apt install stress-ng)"
+        return 0
+    fi
+
+    # CPU contention via stress-ng.
+    stress-ng --cpu "$(($(nproc) * 4))" --timeout 12s \
+        >/tmp/verify-stress-cpu.log 2>&1 &
+    local spid=$!
+    sleep 1
+    sudo "$KERNO" --config scripts/verify-config.yaml \
+        doctor --duration 10s --output json \
+        >/tmp/verify-stress-cpu-doctor.json 2>/tmp/verify-stress-cpu-doctor.log
+    wait $spid 2>/dev/null || true
+
+    if jq -e '.findings[] | select(.rule == "scheduler_contention" or .rule == "syscall_latency_high")' \
+            /tmp/verify-stress-cpu-doctor.json >/dev/null 2>&1; then
+        phase_pass "$n" "stress-ng --cpu → scheduler_contention or syscall_latency_high fired"
+    else
+        phase_fail "$n" "stress-ng --cpu did not trip a CPU rule"
+    fi
+
+    # Disk fsync contention via stress-ng.
+    stress-ng --hdd 8 --hdd-bytes 16M --timeout 12s \
+        >/tmp/verify-stress-hdd.log 2>&1 &
+    spid=$!
+    sleep 1
+    sudo "$KERNO" --config scripts/verify-config.yaml \
+        doctor --duration 10s --output json \
+        >/tmp/verify-stress-hdd-doctor.json 2>/tmp/verify-stress-hdd-doctor.log
+    wait $spid 2>/dev/null || true
+
+    if jq -e '.findings[] | select(.rule == "disk_io_bottleneck" or .rule == "disk_io_write_high")' \
+            /tmp/verify-stress-hdd-doctor.json >/dev/null 2>&1; then
+        phase_pass "$n" "stress-ng --hdd → disk_io_* fired"
+    else
+        phase_fail "$n" "stress-ng --hdd did not trip a disk rule"
+    fi
+}
+
+# ─── OOM pressure detection ───────────────────────────────────────────────
+#
+# We DON'T allocate enough memory to actually trigger OOM (would kill
+# the test runner). Instead we run kerno doctor with a config that
+# treats current-usage as critical (oom_memory_pct: 0.0), so any non-zero
+# memory use reports as OOM-imminent. That proves the rule code path
+# fires correctly. Real OOM detection on a memory-limited VM is the
+# integration variant and is left to the v0.1 Ubuntu test box.
+
+phase_oom_pressure() {
+    echo "==> 14. OOM imminent rule path"
+    local n=$1
+
+    cat >/tmp/verify-oom-config.yaml <<'YAML'
+log_level: info
+log_format: text
+doctor:
+  duration: 5s
+  thresholds:
+    oom_memory_pct: 0.0   # treat any memory usage as triggering
+prometheus:
+  enabled: false
+ai:
+  enabled: false
+YAML
+
+    sudo "$KERNO" --config /tmp/verify-oom-config.yaml \
+        doctor --duration 5s --output json \
+        >/tmp/verify-oom-doctor.json 2>/tmp/verify-oom-doctor.log
+
+    # Note: kerno doesn't yet have a procfs memory poller, so the
+    # signals.memory snapshot is nil unless cgroup PSI / meminfo polling
+    # is implemented (Phase 10.4). Until then, the rule cannot fire
+    # without that collector. Mark as SKIP so the gate is honest.
+    if jq -e '.signals.memory != null' /tmp/verify-oom-doctor.json >/dev/null 2>&1; then
+        if jq -e '.findings[] | select(.rule == "oom_imminent")' \
+                /tmp/verify-oom-doctor.json >/dev/null 2>&1; then
+            phase_pass "$n" "oom_imminent rule fires when threshold is 0%"
+        else
+            phase_fail "$n" "oom_imminent rule did not fire even at 0% threshold"
+        fi
+    else
+        phase_skip "$n" "memory collector (procfs poller) not yet implemented (Phase 10.4) — rule untestable"
+    fi
+}
+
 # ─── Phase registry ───────────────────────────────────────────────────────
 
 declare -A PHASES=(
@@ -463,11 +610,14 @@ declare -A PHASES=(
     [doctor]=phase_doctor
     [chaos]=phase_chaos
     [induce_detect]=phase_induce_detect
+    [tc_netem]=phase_tc_netem
+    [stress_ng]=phase_stress_ng
+    [oom_pressure]=phase_oom_pressure
     [daemon]=phase_daemon
     [manifests]=phase_manifests
 )
 
-PHASE_ORDER=(deps build quality coverage bpf smoke doctor chaos induce_detect daemon manifests)
+PHASE_ORDER=(deps build quality coverage bpf smoke doctor chaos induce_detect tc_netem stress_ng oom_pressure daemon manifests)
 
 # ─── Argument parsing ─────────────────────────────────────────────────────
 
