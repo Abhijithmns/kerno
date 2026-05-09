@@ -203,10 +203,10 @@ phase_smoke() {
     # chaos --list must show all scenarios.
     local scenarios
     scenarios=$("$KERNO" chaos --list | tail -n +2 | awk '{print $1}' | sort | xargs)
-    if [[ "$scenarios" == "cascade cpu disk-sat fd-leak memory tcp-churn" ]]; then
-        phase_pass "$n" "chaos --list shows all 6 scenarios"
+    if [[ "$scenarios" == "cascade cpu disk-sat fd-leak memory tcp-churn tcp-loss" ]]; then
+        phase_pass "$n" "chaos --list shows all 7 scenarios"
     else
-        phase_fail "$n" "chaos --list missing scenarios: '$scenarios'"
+        phase_fail "$n" "chaos --list scenarios mismatch: '$scenarios'"
     fi
 }
 
@@ -260,7 +260,7 @@ phase_chaos() {
     echo "==> 8. chaos scenarios"
     local n=$1
 
-    for s in cpu fd-leak memory disk-sat tcp-churn; do
+    for s in cpu fd-leak memory disk-sat tcp-churn tcp-loss; do
         if "$KERNO" chaos --induce "$s" --duration 1s --intensity low --yes \
                 >/tmp/verify-chaos-"$s"-smoke.log 2>&1; then
             phase_pass "$n" "$s scenario completes cleanly"
@@ -478,9 +478,10 @@ phase_tc_netem() {
     fi
     trap 'sudo tc qdisc del dev lo root 2>/dev/null || true' RETURN
 
-    # Background: a netcat-style TCP echo loop that pumps data through lo.
-    # We use kerno chaos tcp-churn since it generates real connect+close.
-    "$KERNO" chaos --induce tcp-churn --duration 12s --intensity high --yes \
+    # tcp-loss pumps bulk data so packet loss → retransmits is unavoidable.
+    # tcp-churn (which only opens+closes) doesn't reliably retransmit on
+    # lo because SYN often makes it through on first try.
+    "$KERNO" chaos --induce tcp-loss --duration 12s --intensity high --yes \
         >/tmp/verify-tcnetem-chaos.log 2>&1 &
     local cpid=$!
     sleep 1
