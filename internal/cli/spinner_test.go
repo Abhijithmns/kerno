@@ -81,7 +81,7 @@ func TestSpinnerRunAndStop(t *testing.T) {
 	// generator goroutine — atomic prevents the race detector from
 	// flagging the data race that production code sees as benign.
 	var counter atomic.Uint64
-	s.SetEventsFn(func() uint64 { return counter.Load() })
+	s.SetEventsFn(counter.Load)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
