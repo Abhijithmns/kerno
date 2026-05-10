@@ -6,7 +6,9 @@
     { "pattern": "^https://kerno\\.sh" },
     { "pattern": "^https://get\\.kerno\\.sh" },
     { "pattern": "^https://kerno\\.lowplane\\.dev" },
-    { "pattern": "github\\.com/optiqor/kerno-(ui|charts|action)" }
+    { "pattern": "github\\.com/optiqor/kerno-(ui|charts|action)" },
+    { "pattern": "^TODO\\.md$" },
+    { "pattern": "^BRAND_TODO\\.md$" }
   ],
   "timeout": "10s",
   "retryOn429": true,
