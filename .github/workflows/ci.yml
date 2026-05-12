@@ -22,6 +22,8 @@ env:
 
 jobs:
   # ── Lint ──────────────────────────────────────────────────────────────────
+  # Lints against the no-clang stub mode (the default). The stubs match
+  # the generated types one-for-one, so linting picks up any drift.
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -32,15 +34,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - name: Install BPF toolchain
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            clang llvm libbpf-dev linux-headers-generic
-
-      - name: Generate BPF bindings
-        run: go generate ./internal/bpf/...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -57,6 +50,8 @@ jobs:
           git diff --exit-code go.mod go.sum
 
   # ── Unit Tests ────────────────────────────────────────────────────────────
+  # Tests run in stub mode; they exercise pure-Go logic (aggregators,
+  # decoders, rules, CLI) which doesn't depend on real BPF loading.
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -67,18 +62,6 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      - name: Install covdata tool
-        run: go install golang.org/x/tools/cmd/covdata@latest || true
-
-      - name: Install BPF toolchain
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            clang llvm libbpf-dev linux-headers-generic
-
-      - name: Generate BPF bindings
-        run: go generate ./internal/bpf/...
 
       - name: Run tests
         run: go test -race -count=1 -coverprofile=coverage.out ./...
@@ -91,6 +74,9 @@ jobs:
           retention-days: 7
 
   # ── Build ─────────────────────────────────────────────────────────────────
+  # `make build-ebpf` installs nothing extra here because the action already
+  # has clang available, runs `make generate`, and then `make build GOTAGS=ebpf`
+  # so the released binary embeds real eBPF bytecode (not stubs).
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -111,11 +97,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang llvm libbpf-dev linux-headers-generic
 
-      - name: Generate BPF bindings
-        run: go generate ./internal/bpf/...
-
-      - name: Build binary
-        run: make build
+      - name: Build binary (with eBPF bytecode)
+        run: make build-ebpf
 
       - name: Verify binary
         run: ./bin/kerno version
