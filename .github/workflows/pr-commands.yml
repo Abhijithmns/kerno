@@ -170,14 +170,55 @@ jobs:
 
               case 'ok-to-test': {
                 if (!(await requireMaintainer())) break;
+
+                // 1. Apply the documentary label so it's visible in the UI.
                 await github.rest.issues.addLabels({
                   ...repo, issue_number: prNumber, labels: ['ok-to-test'],
                 });
+
+                // 2. Approve any workflow runs waiting on first-time-contributor
+                //    review. GitHub's default policy gates these regardless of any
+                //    label, so we have to call the approve endpoint explicitly.
+                const sha = pr.head.sha;
+                const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+                  ...repo, head_sha: sha, per_page: 100,
+                });
+
+                let approved = 0;
+                let alreadyRunning = 0;
+                for (const r of runs) {
+                  // "action_required" / "waiting" → gated on us.
+                  if (r.status === 'action_required' || r.status === 'waiting') {
+                    try {
+                      await github.rest.actions.approveWorkflowRun({
+                        ...repo, run_id: r.id,
+                      });
+                      approved++;
+                    } catch (e) {
+                      core.warning(`approve failed for run ${r.id}: ${e.message}`);
+                    }
+                  } else if (r.status === 'queued' || r.status === 'in_progress') {
+                    alreadyRunning++;
+                  }
+                }
+
                 await react('+1');
-                await reply(
-                  `@${pr.user.login}, your PR is approved for CI. ` +
-                  `Push a new commit or comment \`/retest\` to trigger a run.`
-                );
+
+                let msg;
+                if (approved > 0) {
+                  msg =
+                    `Approved ${approved} pending workflow run${approved === 1 ? '' : 's'} ` +
+                    `on \`${sha.slice(0, 7)}\`. CI should start within a minute.`;
+                } else if (alreadyRunning > 0) {
+                  msg =
+                    `No runs were waiting for approval (${alreadyRunning} already running). ` +
+                    `Label applied for future reference.`;
+                } else {
+                  msg =
+                    `No pending workflow runs found on \`${sha.slice(0, 7)}\`. ` +
+                    `Label applied. If CI should be running but isn't, push a fresh commit.`;
+                }
+                await reply(msg);
                 break;
               }
 
