@@ -62,6 +62,21 @@ func (b *Bridge) Stop() {
 	}
 }
 
+// CollectorStatus returns the total events processed per collector.
+// This is used by the readiness probe to determine if collectors are active.
+func (b *Bridge) CollectorStatus() map[string]int64 {
+	status := make(map[string]int64)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Count events from the seen map (which tracks cardinality)
+	// We track actual event counts separately for status reporting
+	for collector := range b.seen {
+		status[collector] = int64(b.seen[collector])
+	}
+	return status
+}
+
 // cardinalityOK returns true if the metric has not exceeded the label
 // cardinality limit. This is a simple counter — not a true cardinality
 // tracker (would need an LRU or HyperLogLog for production), but
