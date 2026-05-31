@@ -153,7 +153,7 @@ func runStart(ctx context.Context, opts startOpts) error {
 	if opts.prometheus {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", healthzHandler(loadedCount, len(loaders)))
-		mux.HandleFunc("/readyz", readyzHandler(loadedCount, len(loaders), bridge))
+		mux.HandleFunc("/readyz", readyzHandler(loadedCount, len(loaders)))
 		mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 
 		httpServer = &http.Server{
@@ -240,57 +240,35 @@ func healthzHandler(loaded, total int) http.HandlerFunc {
 			"version":         version.Version,
 			"uptime":          time.Since(startTime).Seconds(),
 			"programs_loaded": loaded,
-			"program_total":   total,
+			"programs_total":  total,
 		})
 	}
 }
 
 // readyzHandler returns the readiness probe handler.
-func readyzHandler(loaded, total int, bridge *metrics.Bridge) http.HandlerFunc {
+func readyzHandler(loaded, total int) http.HandlerFunc {
 	startTime := time.Now()
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		// Check if all expected BPF programs are loaded
-		if loaded < total {
+		// Ready with atleast one BPF program is loaded
+		// Partial loads are acceptable due to graceful degradation
+		if loaded == 0 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]any{
-				"status":              "not_ready",
-				"bpf_programs_loaded": loaded,
-				"bpf_programs_total":  total,
-				"collector_status":    map[string]string{"overall": "degraded"},
-			})
-			return
-		}
-
-		// Get collector stats from bridge
-		collectorStatus := bridge.CollectorStatus()
-		totalEvents := int64(0)
-		for _, count := range collectorStatus {
-			totalEvents += count
-		}
-
-		// Check if collectors are receiving events
-		if totalEvents == 0 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]any{
-				"status":              "not_ready",
-				"bpf_programs_loaded": loaded,
-				"bpf_programs_total":  total,
-				"events_collected":    totalEvents,
-				"collector_status":    map[string]string{"overall": "no_events"},
+				"status":          "not_ready",
+				"programs_loaded": loaded,
+				"programs_total":  total,
 			})
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":              "ready",
-			"bpf_programs_loaded": loaded,
-			"bpf_programs_total":  total,
-			"events_collected":    totalEvents,
-			"collector_status":    collectorStatus,
-			"uptime":              time.Since(startTime).Seconds(),
+			"status":          "ready",
+			"programs_loaded": loaded,
+			"programs_total":  total,
+			"uptime":          time.Since(startTime).Seconds(),
 		})
 	}
 }
